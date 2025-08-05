@@ -1,0 +1,270 @@
+#include <bits/stdc++.h>
+using namespace std;
+
+struct Grammar {
+    string startSymbol;
+    map<string, vector<string>> productions;
+
+    void print() const {
+        cout << "Start: " << startSymbol << "\n";
+        for (auto &p : productions) {
+            cout << p.first << " -> ";
+            for (size_t i = 0; i < p.second.size(); i++) {
+                cout << p.second[i];
+                if (i < p.second.size() - 1) cout << " | ";
+            }
+            cout << "\n";
+        }
+    }
+};
+
+// ====================== Entrada manual ======================
+Grammar readGrammarFromInput() {
+    Grammar g;
+    cout << "Digite o símbolo inicial: ";
+    cin >> g.startSymbol;
+
+    int n;
+    cout << "Digite o número de produções: ";
+    cin >> n;
+    cin.ignore();
+
+    for (int i = 0; i < n; i++) {
+        cout << "Produção " << i+1 << ": ";
+        string line;
+        getline(cin, line);
+
+        size_t pos = line.find("->");
+        if (pos == string::npos) continue;
+
+        string left = line.substr(0, pos);
+        string right = line.substr(pos + 2);
+
+        auto trim = [](string s){
+            s.erase(remove_if(s.begin(), s.end(), ::isspace), s.end());
+            return s;
+        };
+        left = trim(left);
+
+        vector<string> alternatives;
+        stringstream ss(right);
+        string token;
+        while (getline(ss, token, '|')) {
+            alternatives.push_back(trim(token));
+        }
+        g.productions[left] = alternatives;
+    }
+    return g;
+}
+
+// ================= Simplificação =================
+class Simplifier {
+public:
+    static void removeUnreachable(Grammar &g) {
+        set<string> reachable;
+        queue<string> q;
+        q.push(g.startSymbol);
+        reachable.insert(g.startSymbol);
+
+        while (!q.empty()) {
+            string symbol = q.front(); q.pop();
+            for (auto &prod : g.productions[symbol]) {
+                for (char c : prod) {
+                    if (isupper(c)) {
+                        string nt(1, c);
+                        if (!reachable.count(nt)) {
+                            reachable.insert(nt);
+                            q.push(nt);
+                        }
+                    }
+                }
+            }
+        }
+        map<string, vector<string>> newProductions;
+        for (auto &p : g.productions) {
+            if (reachable.count(p.first))
+                newProductions[p.first] = p.second;
+        }
+        g.productions = newProductions;
+    }
+
+    static void removeEmptyProductions(Grammar &g) {
+        set<string> nullable;
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            for (auto &p : g.productions) {
+                for (auto &rhs : p.second) {
+                    if (rhs == "ε" || all_of(rhs.begin(), rhs.end(),
+                            [&](char c){return isupper(c) && nullable.count(string(1,c));})) {
+                        if (!nullable.count(p.first)) {
+                            nullable.insert(p.first);
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        map<string, vector<string>> newProductions;
+        for (auto &p : g.productions) {
+            set<string> newRHS;
+            for (auto &rhs : p.second) {
+                if (rhs == "ε") continue;
+                vector<int> nullablePos;
+                for (int i = 0; i < (int)rhs.size(); i++) {
+                    if (isupper(rhs[i]) && nullable.count(string(1, rhs[i]))) {
+                        nullablePos.push_back(i);
+                    }
+                }
+                int n = nullablePos.size();
+                for (int mask = 0; mask < (1 << n); mask++) {
+                    string newString = rhs;
+                    for (int j = n-1; j >= 0; j--) {
+                        if (mask & (1<<j)) newString.erase(newString.begin() + nullablePos[j]);
+                    }
+                    if (newString.empty()) newString = "ε";
+                    newRHS.insert(newString);
+                }
+            }
+            newProductions[p.first] = vector<string>(newRHS.begin(), newRHS.end());
+        }
+        g.productions = newProductions;
+    }
+
+    static void removeUnitProductions(Grammar &g) {
+        bool changed = true;
+        while (changed) {
+            changed = false;
+            map<string, vector<string>> newProds = g.productions;
+            for (auto &p : g.productions) {
+                vector<string> newRHS;
+                for (auto &rhs : p.second) {
+                    if (rhs.size() == 1 && isupper(rhs[0])) {
+                        for (auto &x : g.productions[string(1, rhs[0])])
+                            newRHS.push_back(x);
+                        changed = true;
+                    } else {
+                        newRHS.push_back(rhs);
+                    }
+                }
+                newProds[p.first] = newRHS;
+            }
+            g.productions = newProds;
+        }
+    }
+};
+
+// ================= Transformações =================
+class Transformer {
+public:
+    static void removeLeftRecursion(Grammar &g) {
+        for (auto &p : g.productions) {
+            vector<string> alpha, beta;
+            for (auto &rhs : p.second) {
+                if (!rhs.empty() && rhs[0] == p.first[0])
+                    alpha.push_back(rhs.substr(1));
+                else
+                    beta.push_back(rhs);
+            }
+            if (!alpha.empty()) {
+                string newVar = p.first + "'";
+                vector<string> newAlpha;
+                for (auto &a : alpha) newAlpha.push_back(a + newVar);
+                newAlpha.push_back("ε");
+
+                vector<string> newBeta;
+                for (auto &b : beta) newBeta.push_back(b + newVar);
+
+                g.productions[p.first] = newBeta;
+                g.productions[newVar] = newAlpha;
+            }
+        }
+    }
+
+    static void leftFactor(Grammar &g) {
+        for (auto &p : g.productions) {
+            auto &rhs = p.second;
+            if (rhs.size() < 2) continue;
+            sort(rhs.begin(), rhs.end());
+            for (size_t i = 0; i + 1 < rhs.size(); i++) {
+                string a = rhs[i], b = rhs[i+1];
+                size_t j = 0;
+                while (j < a.size() && j < b.size() && a[j] == b[j]) j++;
+                if (j > 0) {
+                    string prefix = a.substr(0,j);
+                    string A1 = p.first + "'";
+                    vector<string> suffixes;
+                    for (auto &alt : rhs) {
+                        if (alt.substr(0,j) == prefix)
+                            suffixes.push_back(alt.substr(j).empty() ? "ε" : alt.substr(j));
+                    }
+                    g.productions[A1] = suffixes;
+                    rhs = {prefix + A1};
+                    break;
+                }
+            }
+        }
+    }
+};
+
+class Normalizer {
+    static int newVarIndex;
+    static string newVar() {
+        return "X" + to_string(newVarIndex++);
+    }
+public:
+    static void toChomsky(Grammar &g) {
+        // Normalização simplificada para exemplo
+        for (auto &p : g.productions) {
+            for (auto &rhs : p.second) {
+                if (rhs.size() > 2) {
+                    string temp = newVar();
+                    g.productions[temp] = {rhs.substr(1)};
+                }
+            }
+        }
+    }
+    static void toGreibach(Grammar &g) {
+        for (auto &p : g.productions) {
+            for (auto &rhs : p.second) {
+                if (isupper(rhs[0])) {
+                    string rep = g.productions[string(1,rhs[0])][0];
+                    rhs = rep + rhs.substr(1);
+                }
+            }
+        }
+    }
+};
+int Normalizer::newVarIndex = 0;
+
+// ===================== MAIN =====================
+int main() {
+    Grammar g = readGrammarFromInput();
+
+    cout << "\n=== Gramática Original ===\n";
+    g.print();
+
+    Simplifier::removeUnreachable(g);
+    Simplifier::removeEmptyProductions(g);
+    Simplifier::removeUnitProductions(g);
+
+    cout << "\n=== Após Simplificação ===\n";
+    g.print();
+
+    Transformer::removeLeftRecursion(g);
+    Transformer::leftFactor(g);
+
+    cout << "\n=== Após Fatoração e Remoção de Recursão ===\n";
+    g.print();
+
+    Normalizer::toChomsky(g);
+    cout << "\n=== Forma Normal de Chomsky (simplificada) ===\n";
+    g.print();
+
+    Normalizer::toGreibach(g);
+    cout << "\n=== Forma Normal de Greibach (simplificada) ===\n";
+    g.print();
+
+    return 0;
+}
