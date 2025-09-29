@@ -1,0 +1,87 @@
+import json
+import sys
+
+class TuringMachine:
+    def __init__(self, spec_file):
+        """Inicializa a Máquina de Turing com as especificações do arquivo JSON"""
+        with open(spec_file, 'r') as f:
+            spec = json.load(f)
+        
+        self.initial_state = spec['initial']
+        self.final_states = spec['final']
+        self.white_symbol = spec['white']
+        self.transitions = {}
+        
+        for t in spec['transitions']:
+            key = (t['from'], t['read'])
+            self.transitions[key] = {
+                'to': t['to'],
+                'write': t['write'],
+                'dir': t['dir']
+            }
+    
+    def run(self, input_string):
+        """Executa a Máquina de Turing com a entrada fornecida"""
+        tape = list(input_string) if input_string else [self.white_symbol]
+        head = 0
+        state = self.initial_state
+        
+        max_iterations = 100000  # Proteção contra loop infinito
+        iterations = 0
+        
+        while state not in self.final_states and iterations < max_iterations:
+            iterations += 1
+            
+            if head < 0:
+                tape.insert(0, self.white_symbol)
+                head = 0
+            elif head >= len(tape):
+                tape.append(self.white_symbol)
+            
+            current_symbol = tape[head]
+            
+            key = (state, current_symbol)
+            if key not in self.transitions:
+                return False, ''.join(tape).strip(self.white_symbol)
+            
+            transition = self.transitions[key]
+            
+            tape[head] = transition['write']
+            state = transition['to']
+            
+            if transition['dir'] == 'R':
+                head += 1
+            elif transition['dir'] == 'L':
+                head -= 1
+            
+        accepted = state in self.final_states
+        
+        result_tape = ''.join(tape).strip(self.white_symbol)
+        
+        return accepted, result_tape
+
+def main():
+    if len(sys.argv) != 3:
+        print("Uso: python turing_simulator.py <arquivo_spec.json> <arquivo_entrada.txt>")
+        sys.exit(1)
+    
+    spec_file = sys.argv[1]
+    input_file = sys.argv[2]
+    
+    with open(input_file, 'r') as f:
+        input_string = f.read().strip()
+    
+    tm = TuringMachine(spec_file)
+    accepted, output_tape = tm.run(input_string)
+    
+    output_file = input_file.rsplit('.', 1)[0] + '_out.txt'
+    
+    with open(output_file, 'w') as f:
+        f.write(output_tape)
+    
+    print(1 if accepted else 0)
+    
+    return 0 if accepted else 1
+
+if __name__ == "__main__":
+    sys.exit(main())
