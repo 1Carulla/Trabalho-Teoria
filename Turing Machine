@@ -1,87 +1,175 @@
-import json
-import sys
+// turing_simulator.cpp
+#include <bits/stdc++.h>
+#include "json.hpp" // nlohmann::json (https://github.com/nlohmann/json)
+using json = nlohmann::json;
+using namespace std;
 
-class TuringMachine:
-    def __init__(self, spec_file):
-        """Inicializa a Máquina de Turing com as especificações do arquivo JSON"""
-        with open(spec_file, 'r') as f:
-            spec = json.load(f)
-        
-        self.initial_state = spec['initial']
-        self.final_states = spec['final']
-        self.white_symbol = spec['white']
-        self.transitions = {}
-        
-        for t in spec['transitions']:
-            key = (t['from'], t['read'])
-            self.transitions[key] = {
-                'to': t['to'],
-                'write': t['write'],
-                'dir': t['dir']
-            }
-    
-    def run(self, input_string):
-        """Executa a Máquina de Turing com a entrada fornecida"""
-        tape = list(input_string) if input_string else [self.white_symbol]
-        head = 0
-        state = self.initial_state
-        
-        max_iterations = 100000  # Proteção contra loop infinito
-        iterations = 0
-        
-        while state not in self.final_states and iterations < max_iterations:
-            iterations += 1
-            
-            if head < 0:
-                tape.insert(0, self.white_symbol)
-                head = 0
-            elif head >= len(tape):
-                tape.append(self.white_symbol)
-            
-            current_symbol = tape[head]
-            
-            key = (state, current_symbol)
-            if key not in self.transitions:
-                return False, ''.join(tape).strip(self.white_symbol)
-            
-            transition = self.transitions[key]
-            
-            tape[head] = transition['write']
-            state = transition['to']
-            
-            if transition['dir'] == 'R':
-                head += 1
-            elif transition['dir'] == 'L':
-                head -= 1
-            
-        accepted = state in self.final_states
-        
-        result_tape = ''.join(tape).strip(self.white_symbol)
-        
-        return accepted, result_tape
+struct Transition {
+    string to;
+    char write;
+    char dir; // 'R' ou 'L'
+};
 
-def main():
-    if len(sys.argv) != 3:
-        print("Uso: python turing_simulator.py <arquivo_spec.json> <arquivo_entrada.txt>")
-        sys.exit(1)
-    
-    spec_file = sys.argv[1]
-    input_file = sys.argv[2]
-    
-    with open(input_file, 'r') as f:
-        input_string = f.read().strip()
-    
-    tm = TuringMachine(spec_file)
-    accepted, output_tape = tm.run(input_string)
-    
-    output_file = input_file.rsplit('.', 1)[0] + '_out.txt'
-    
-    with open(output_file, 'w') as f:
-        f.write(output_tape)
-    
-    print(1 if accepted else 0)
-    
-    return 0 if accepted else 1
+int main(int argc, char** argv) {
+    if (argc != 3) {
+        cerr << "Uso: " << argv[0] << " <arquivo_spec.json> <arquivo_entrada.txt>\n";
+        return 1;
+    }
 
-if __name__ == "__main__":
-    sys.exit(main())
+    string spec_file = argv[1];
+    string input_file = argv[2];
+
+    // --- Ler JSON de especificação ---
+    json spec;
+    try {
+        ifstream fin(spec_file);
+        if (!fin.is_open()) {
+            cerr << "Erro ao abrir arquivo de spec: " << spec_file << "\n";
+            return 1;
+        }
+        fin >> spec;
+    } catch (const std::exception& e) {
+        cerr << "Erro ao ler/parsear JSON: " << e.what() << "\n";
+        return 1;
+    }
+
+    // Campos esperados no JSON: initial, final (array), white, transitions (array)
+    string initial_state = spec.value("initial", string());
+    vector<string> final_states = spec.value("final", vector<string>{});
+    string white_s = spec.value("white", string("_"));
+    char white_symbol = white_s.empty() ? '_' : white_s[0];
+
+    // Carregar transições em um mapa: key = estado + '|' + símbolo_lido
+    unordered_map<string, Transition> transitions;
+    if (spec.contains("transitions") && spec["transitions"].is_array()) {
+        for (const auto& t : spec["transitions"]) {
+            string from = t.value("from", string());
+            string read_s = t.value("read", string());
+            char read = read_s.empty() ? white_symbol : read_s[0];
+            string to = t.value("to", string());
+            string write_s = t.value("write", string());
+            char write = write_s.empty() ? white_symbol : write_s[0];
+            string dir_s = t.value("dir", string("R"));
+            char dir = dir_s.empty() ? 'R' : dir_s[0];
+
+            string key;
+            key.reserve(from.size() + 2);
+            key = from + "|" + read;
+
+            transitions[key] = Transition{to, write, dir};
+        }
+    } else {
+        cerr << "Spec JSON não contém 'transitions' como array.\n";
+        return 1;
+    }
+
+    // Ler input
+    string input_string;
+    {
+        ifstream fin(input_file);
+        if (!fin.is_open()) {
+            cerr << "Erro ao abrir arquivo de entrada: " << input_file << "\n";
+            return 1;
+        }
+        // ler todo o arquivo em uma string, removendo espaços iniciais/finais
+        std::ostringstream ss;
+        ss << fin.rdbuf();
+        input_string = ss.str();
+        // trim simples (remover espaços e novas linhas nas extremidades)
+        auto l = input_string.find_first_not_of(" \t\r\n");
+        auto r = input_string.find_last_not_of(" \t\r\n");
+        if (l == string::npos) input_string.clear();
+        else input_string = input_string.substr(l, r - l + 1);
+    }
+
+    // --- Inicializar fita ---
+    deque<char> tape;
+    if (!input_string.empty()) {
+        for (char c : input_string) tape.push_back(c);
+    } else {
+        tape.push_back(white_symbol);
+    }
+
+    int head = 0; // index relativo à fita (0..size-1)
+    string state = initial_state;
+
+    const long long max_iterations = 100000LL;
+    long long iterations = 0;
+
+    auto is_final = [&](const string& s) {
+        return find(final_states.begin(), final_states.end(), s) != final_states.end();
+    };
+
+    bool halted_by_missing_transition = false;
+
+    while (!is_final(state) && iterations < max_iterations) {
+        ++iterations;
+
+        // garantir que head esteja dentro da fita
+        if (head < 0) {
+            tape.push_front(white_symbol);
+            head = 0;
+        } else if (head >= (int)tape.size()) {
+            tape.push_back(white_symbol);
+        }
+
+        char current_symbol = tape[head];
+        string key = state + "|" + string(1, current_symbol);
+
+        auto it = transitions.find(key);
+        if (it == transitions.end()) {
+            // Não há transição definida -> rejeita
+            halted_by_missing_transition = true;
+            break;
+        }
+
+        Transition tr = it->second;
+        tape[head] = tr.write;
+        state = tr.to;
+
+        if (tr.dir == 'R' || tr.dir == 'r') {
+            ++head;
+        } else if (tr.dir == 'L' || tr.dir == 'l') {
+            --head;
+        } else {
+            // se direção inválida, considerar como sem movimento (ou tratar erro)
+            // aqui vamos não mover
+        }
+    }
+
+    bool accepted = is_final(state) && (iterations < max_iterations || is_final(state));
+
+    // Construir string da fita e remover símbolos brancos nas bordas (trim)
+    string result_tape;
+    result_tape.reserve(tape.size());
+    for (char c : tape) result_tape.push_back(c);
+
+    // trim do white_symbol nas extremidades
+    auto first_non_white = result_tape.find_first_not_of(string(1, white_symbol));
+    auto last_non_white = result_tape.find_last_not_of(string(1, white_symbol));
+    string trimmed;
+    if (first_non_white == string::npos) trimmed = ""; // fita só com brancos
+    else trimmed = result_tape.substr(first_non_white, last_non_white - first_non_white + 1);
+
+    // Escrever arquivo de saída com sufixo _out.txt
+    string out_file;
+    auto pos = input_file.rfind('.');
+    if (pos == string::npos) out_file = input_file + "_out.txt";
+    else out_file = input_file.substr(0, pos) + "_out.txt";
+
+    {
+        ofstream fout(out_file);
+        if (!fout.is_open()) {
+            cerr << "Erro ao criar arquivo de saída: " << out_file << "\n";
+            // ainda assim imprimimos resultado no stdout
+        } else {
+            fout << trimmed;
+        }
+    }
+
+    // Imprimir 1 se aceitou, 0 se rejeitou
+    cout << (accepted ? '1' : '0') << '\n';
+
+    // Retornar código de saída: 0 -> aceito, 1 -> rejeitado (espelho do script Python)
+    return accepted ? 0 : 1;
+}
